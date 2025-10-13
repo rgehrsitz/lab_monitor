@@ -1,0 +1,8 @@
+# Example environment variables for Lab Monitor
+# Copy this to .envrc and fill in your actual values
+# Then run: source .envrc
+
+export OPENAI_API_KEY="your-openai-api-key-here"
+export AWS_ACCESS_KEY_ID_SES="your-aws-access-key-here"
+export AWS_SECRET_ACCESS_KEY_SES="your-aws-secret-key-here"
+export AWS_REGION_SES="us-east-2"

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(printenv)",
+      "Bash(OPENAI_API_KEY=test go run:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

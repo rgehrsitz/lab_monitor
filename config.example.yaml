@@ -1,0 +1,37 @@
+# Lab Monitor Configuration Example
+# Copy this file to config.yaml and update with your actual values
+
+schedule:
+  # Times in 24-hour format (HH:MM) for daily reports
+  first: "06:00"
+  second: "16:00"
+
+channels:
+  # ThingSpeak channel configurations
+  - id: 1234567  # Your ThingSpeak channel ID
+    name: "Lab Name 1"  # Descriptive name for the lab
+    temperature_field: "field1"  # ThingSpeak field containing temperature data
+    humidity_field: "field2"  # ThingSpeak field containing humidity data
+
+  - id: 7654321  # Your second ThingSpeak channel ID
+    name: "Lab Name 2"  # Descriptive name for the second lab
+    temperature_field: "field1"
+    humidity_field: "field2"
+
+openai:
+  # OpenAI model to use for report generation
+  # Options: gpt-4o, gpt-4o-mini, gpt-4-turbo, etc.
+  model: "gpt-4o"
+
+email:
+  # Email configuration (uses AWS SES)
+  sender: "your-email@example.com"  # Verified sender email in AWS SES
+  recipients:
+    - "recipient1@example.com"  # Report recipients
+    - "recipient2@example.com"
+  subject_prefix: "[Lab Monitor]"  # Prefix for email subject lines
+
+state:
+  # Local state storage configuration
+  directory: "state"  # Directory to store historical data
+  history_per_lab: 5  # Number of past reports to keep per lab

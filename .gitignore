@@ -1,0 +1,29 @@
+# Binaries and build artifacts
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build cache
+*.a
+*.o
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local state
+state/
+
+# Config with sensitive data
+config.yaml
+config.local.yaml
+.env
+.envrc
