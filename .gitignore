@@ -19,8 +19,8 @@
 *.swp
 .DS_Store
 
-# Local state
-state/
+# Local state (runtime data only, not internal/state package)
+/state/
 
 # Config with sensitive data
 config.yaml
