@@ -8,13 +8,18 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 
 	"labmonitor/internal/config"
 	"labmonitor/internal/events"
 	"labmonitor/internal/report"
 )
 
-const maxLogEntries = 12
+const (
+	maxLogEntries    = 12
+	cardContentWidth = 75
+	logContentWidth  = 75
+)
 
 type Model struct {
 	events   <-chan events.Event
@@ -278,19 +283,17 @@ func (m Model) renderLabs() string {
 		lines := []string{labTitleStyle.Render(fmt.Sprintf("%s  #%d", name, lab.channelID)), statusBlock}
 		if lab.summary != nil {
 			sum := lab.summary
-			lines = append(lines,
-				infoStyle.Render(fmt.Sprintf("Window %s • Samples %d • Requests %d", sum.WindowLabel, sum.Samples, lab.requests)),
-				infoStyle.Render(fmt.Sprintf("Temp %.1f°F avg %.1f°F range %.1f-%.1f°F", sum.LatestTemperature, sum.TemperatureStats.Mean, sum.TemperatureStats.Min, sum.TemperatureStats.Max)),
-				infoStyle.Render(fmt.Sprintf("Humidity %.1f%% avg %.1f%% range %.1f-%.1f%%", sum.LatestHumidity, sum.HumidityStats.Mean, sum.HumidityStats.Min, sum.HumidityStats.Max)),
-			)
+			lines = appendWrappedIndent(lines, infoStyle.Render(fmt.Sprintf("Window %s • Samples %d • Requests %d", sum.WindowLabel, sum.Samples, lab.requests)), cardContentWidth, "  ")
+			lines = appendWrappedIndent(lines, infoStyle.Render(fmt.Sprintf("Temp %.1f°F avg %.1f°F range %.1f-%.1f°F", sum.LatestTemperature, sum.TemperatureStats.Mean, sum.TemperatureStats.Min, sum.TemperatureStats.Max)), cardContentWidth, "  ")
+			lines = appendWrappedIndent(lines, infoStyle.Render(fmt.Sprintf("Humidity %.1f%% avg %.1f%% range %.1f-%.1f%%", sum.LatestHumidity, sum.HumidityStats.Mean, sum.HumidityStats.Min, sum.HumidityStats.Max)), cardContentWidth, "  ")
 		} else {
-			lines = append(lines, infoStyle.Render("No data yet"))
+			lines = appendWrappedIndent(lines, infoStyle.Render("No data yet"), cardContentWidth, "  ")
 		}
 		if lab.details != "" {
-			lines = append(lines, detailStyle.Render(lab.details))
+			lines = appendWrappedIndent(lines, detailStyle.Render(lab.details), cardContentWidth, "  ")
 		}
 		if !lab.updated.IsZero() {
-			lines = append(lines, timestampStyle.Render("Updated "+lab.updated.In(m.loc).Format(time.Kitchen)))
+			lines = appendWrappedIndent(lines, timestampStyle.Render("Updated "+lab.updated.In(m.loc).Format(time.Kitchen)), cardContentWidth, "  ")
 		}
 		cards = append(cards, labCardStyle.Render(strings.Join(lines, "\n")))
 	}
@@ -302,10 +305,14 @@ func (m Model) renderLog() string {
 	if len(m.log) == 0 {
 		return ""
 	}
+	wrapped := make([]string, 0, len(m.log))
+	for _, line := range m.log {
+		wrapped = append(wrapped, wrapWithIndent(logStyle.Render(line), logContentWidth, "  "))
+	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		sectionTitleStyle.Render("Recent Events"),
-		logStyle.Render(strings.Join(m.log, "\n")),
+		logStyle.Render(strings.Join(wrapped, "\n")),
 	)
 }
 
@@ -361,4 +368,33 @@ func statusStyle(status string) lipgloss.Style {
 	default:
 		return base
 	}
+}
+
+func appendWrappedIndent(lines []string, text string, width int, indent string) []string {
+	if text == "" {
+		return lines
+	}
+	wrapped := wrapWithIndent(text, width, indent)
+	return append(lines, strings.Split(wrapped, "\n")...)
+}
+
+func wrapWithIndent(text string, width int, indent string) string {
+	if text == "" {
+		return ""
+	}
+	if width <= 0 {
+		width = lipgloss.Width(text)
+	}
+	wrapped := wordwrap.String(text, width)
+	if indent == "" {
+		return wrapped
+	}
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	for i := 1; i < len(lines); i++ {
+		lines[i] = indent + strings.TrimLeft(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }
