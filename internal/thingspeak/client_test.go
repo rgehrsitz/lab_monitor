@@ -24,7 +24,7 @@ func TestGetFeeds_InvalidTimeRange(t *testing.T) {
 	start := time.Date(2025, 1, 1, 14, 0, 0, 0, time.UTC)
 	end := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
 
-	_, err := client.GetFeeds(ctx, 12345, start, end)
+	_, _, err := client.GetFeeds(ctx, 12345, start, end)
 	if err == nil {
 		t.Error("Expected error for end before start, got nil")
 	}

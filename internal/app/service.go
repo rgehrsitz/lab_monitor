@@ -10,6 +10,7 @@ import (
 
 	"labmonitor/internal/config"
 	"labmonitor/internal/email"
+	"labmonitor/internal/events"
 	"labmonitor/internal/llm"
 	"labmonitor/internal/report"
 	"labmonitor/internal/state"
@@ -28,9 +29,10 @@ type Service struct {
 	emailSender    *email.Sender
 	store          *state.Store
 	channelsByName map[string]config.ChannelConfig
+	events         chan<- events.Event
 }
 
-func NewService(cfg config.Config, ts *thingspeak.Client, agg report.Aggregator, pb report.PromptBuilder, llmClient *llm.Client, emailSender *email.Sender, store *state.Store) *Service {
+func NewService(cfg config.Config, ts *thingspeak.Client, agg report.Aggregator, pb report.PromptBuilder, llmClient *llm.Client, emailSender *email.Sender, store *state.Store, events chan<- events.Event) *Service {
 	channels := make(map[string]config.ChannelConfig, len(cfg.Channels))
 	for _, ch := range cfg.Channels {
 		channels[ch.Name] = ch
@@ -44,23 +46,47 @@ func NewService(cfg config.Config, ts *thingspeak.Client, agg report.Aggregator,
 		emailSender:    emailSender,
 		store:          store,
 		channelsByName: channels,
+		events:         events,
 	}
 }
 
 func (s *Service) Run(ctx context.Context, now time.Time) error {
 	log.Printf("Starting lab monitor run at %s", now.Format(time.RFC3339))
+	s.emit(events.KindRunStarted, func(e *events.Event) {
+		e.Message = now.Format(time.RFC3339)
+	})
 	refTime := now.UTC()
 	summaries := make([]report.Summary, 0, len(s.cfg.Channels))
 
 	log.Printf("Fetching data for %d lab(s)...", len(s.cfg.Channels))
 	for i, ch := range s.cfg.Channels {
 		log.Printf("[%d/%d] Fetching %s (ID: %d)...", i+1, len(s.cfg.Channels), ch.Name, ch.ID)
-		feeds, err := s.thingspeak.GetFeeds(ctx, ch.ID, refTime.Add(-baselineWindow), refTime)
+		s.emit(events.KindFetchStarted, func(e *events.Event) {
+			e.LabName = ch.Name
+			e.ChannelID = ch.ID
+			e.WindowHours = int(baselineWindow.Hours())
+		})
+		feeds, stats, err := s.thingspeak.GetFeeds(ctx, ch.ID, refTime.Add(-baselineWindow), refTime)
 		if err != nil {
-			return fmt.Errorf("fetch channel %s: %w", ch.Name, err)
+			runErr := fmt.Errorf("fetch channel %s: %w", ch.Name, err)
+			s.emit(events.KindRunFailed, func(e *events.Event) {
+				e.Error = runErr.Error()
+			})
+			return runErr
 		}
 		log.Printf("[%d/%d] Retrieved %d data points for %s", i+1, len(s.cfg.Channels), len(feeds), ch.Name)
 		summary := s.aggregator.Summarize(feeds, ch.ID, ch.TemperatureField, ch.HumidityField, baselineWindow, refTime, ch.Name, fmt.Sprintf("baseline %dh", int(baselineWindow.Hours())))
+		s.emit(events.KindFetchCompleted, func(e *events.Event) {
+			e.LabName = ch.Name
+			e.ChannelID = ch.ID
+			e.WindowHours = int(baselineWindow.Hours())
+			e.Samples = len(feeds)
+			e.Requests = stats.Requests
+			if stats.Splits > 0 {
+				e.Message = fmt.Sprintf("split into %d requests", stats.Requests)
+			}
+			e.Summary = &summary
+		})
 		summaries = append(summaries, summary)
 	}
 	notes := []string{
@@ -77,15 +103,26 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 	log.Println("Building analysis prompt...")
 	prompt, err := s.promptBuilder.Build(summaries, lastReport, notes)
 	if err != nil {
-		return fmt.Errorf("build prompt: %w", err)
+		runErr := fmt.Errorf("build prompt: %w", err)
+		s.emit(events.KindRunFailed, func(e *events.Event) {
+			e.Error = runErr.Error()
+		})
+		return runErr
 	}
 
 	log.Println("Requesting AI analysis...")
 	result, err := s.llmClient.GenerateAssessment(ctx, prompt)
 	if err != nil {
-		return fmt.Errorf("llm assessment: %w", err)
+		runErr := fmt.Errorf("llm assessment: %w", err)
+		s.emit(events.KindRunFailed, func(e *events.Event) {
+			e.Error = runErr.Error()
+		})
+		return runErr
 	}
 	log.Println("AI analysis complete")
+	s.emit(events.KindAssessmentReady, func(e *events.Event) {
+		e.Assessment = &result.Assessment
+	})
 	allSummaries := append([]report.Summary(nil), summaries...)
 	escalations := make(map[string]int)
 	attempt := 1
@@ -93,6 +130,9 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		log.Printf("AI requested additional context for %d lab(s), fetching extended data (attempt %d/%d)...", len(result.Assessment.NeedContext.Labs), attempt+1, maxContextAttempts)
 		attempt++
 		additionalSummaries := make([]report.Summary, 0, len(result.Assessment.NeedContext.Labs))
+		s.emit(events.KindContextRequested, func(e *events.Event) {
+			e.Message = fmt.Sprintf("%d request(s)", len(result.Assessment.NeedContext.Labs))
+		})
 		for _, req := range result.Assessment.NeedContext.Labs {
 			ch, ok := s.channelsByName[req.Name]
 			if !ok {
@@ -105,15 +145,34 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 			}
 			window := time.Duration(req.WindowHours) * time.Hour
 			log.Printf("  Fetching %dh window for %s (reason: %s)", req.WindowHours, req.Name, req.Reason)
-			feeds, err := s.thingspeak.GetFeeds(ctx, ch.ID, refTime.Add(-window), refTime)
+			s.emit(events.KindFetchStarted, func(e *events.Event) {
+				e.LabName = ch.Name
+				e.ChannelID = ch.ID
+				e.WindowHours = req.WindowHours
+				e.Message = fmt.Sprintf("need_context: %s", req.Reason)
+			})
+			feeds, stats, err := s.thingspeak.GetFeeds(ctx, ch.ID, refTime.Add(-window), refTime)
 			if err != nil {
-				return fmt.Errorf("fetch extended window %s: %w", ch.Name, err)
+				runErr := fmt.Errorf("fetch extended window %s: %w", ch.Name, err)
+				s.emit(events.KindRunFailed, func(e *events.Event) {
+					e.Error = runErr.Error()
+				})
+				return runErr
 			}
 			label := fmt.Sprintf("need_context %dh %s", req.WindowHours, req.Reason)
 			summary := s.aggregator.Summarize(feeds, ch.ID, ch.TemperatureField, ch.HumidityField, window, refTime, ch.Name, label)
 			additionalSummaries = append(additionalSummaries, summary)
 			escalations[ch.Name] = req.WindowHours
 			notes = append(notes, fmt.Sprintf("provided_context lab=%s window=%dh reason=%s", ch.Name, req.WindowHours, req.Reason))
+			s.emit(events.KindContextProvided, func(e *events.Event) {
+				e.LabName = ch.Name
+				e.ChannelID = ch.ID
+				e.WindowHours = req.WindowHours
+				e.Requests = stats.Requests
+				e.Samples = len(feeds)
+				e.Message = req.Reason
+				e.Summary = &summary
+			})
 		}
 		if len(additionalSummaries) == 0 {
 			break
@@ -122,13 +181,24 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		log.Println("Re-analyzing with additional context...")
 		prompt, err = s.promptBuilder.Build(allSummaries, lastReport, notes)
 		if err != nil {
-			return fmt.Errorf("build extended prompt: %w", err)
+			runErr := fmt.Errorf("build extended prompt: %w", err)
+			s.emit(events.KindRunFailed, func(e *events.Event) {
+				e.Error = runErr.Error()
+			})
+			return runErr
 		}
 		result, err = s.llmClient.GenerateAssessment(ctx, prompt)
 		if err != nil {
-			return fmt.Errorf("llm extended assessment: %w", err)
+			runErr := fmt.Errorf("llm extended assessment: %w", err)
+			s.emit(events.KindRunFailed, func(e *events.Event) {
+				e.Error = runErr.Error()
+			})
+			return runErr
 		}
 		log.Println("Extended analysis complete")
+		s.emit(events.KindAssessmentReady, func(e *events.Event) {
+			e.Assessment = &result.Assessment
+		})
 	}
 
 	log.Println("Generating report...")
@@ -137,10 +207,20 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 	subject := fmt.Sprintf("%s report", now.In(time.Local).Format("2006-01-02 15:04"))
 
 	log.Printf("Sending report to %d recipient(s)...", len(s.cfg.Email.Recipients))
+	s.emit(events.KindEmailAttempt, func(e *events.Event) {
+		e.Message = subject
+	})
 	if err := s.emailSender.Send(ctx, s.cfg.Email.Recipients, subject, textBody, htmlBody); err != nil {
-		return fmt.Errorf("send email: %w", err)
+		runErr := fmt.Errorf("send email: %w", err)
+		s.emit(events.KindRunFailed, func(e *events.Event) {
+			e.Error = runErr.Error()
+		})
+		return runErr
 	}
 	log.Println("Report sent successfully")
+	s.emit(events.KindEmailSent, func(e *events.Event) {
+		e.Message = subject
+	})
 	perLab := make([]state.LabReport, 0, len(result.Assessment.Labs))
 	for _, lab := range result.Assessment.Labs {
 		perLab = append(perLab, state.LabReport{
@@ -160,13 +240,40 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 	}
 	log.Println("Saving report to state store...")
 	if err := s.store.SaveReport(record); err != nil {
-		return fmt.Errorf("save report: %w", err)
+		runErr := fmt.Errorf("save report: %w", err)
+		s.emit(events.KindRunFailed, func(e *events.Event) {
+			e.Error = runErr.Error()
+		})
+		return runErr
 	}
+	s.emit(events.KindStateSaved, func(e *events.Event) {
+		e.Message = record.PromptDigest
+	})
 	log.Printf("Run complete - Overall status: %s", record.Overall)
+	s.emit(events.KindRunCompleted, func(e *events.Event) {
+		e.Assessment = &result.Assessment
+	})
 	return nil
 }
 
 func hashString(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func (s *Service) emit(kind events.Kind, enrich func(*events.Event)) {
+	if s.events == nil {
+		return
+	}
+	ev := events.Event{
+		Time: time.Now(),
+		Kind: kind,
+	}
+	if enrich != nil {
+		enrich(&ev)
+	}
+	select {
+	case s.events <- ev:
+	default:
+	}
 }

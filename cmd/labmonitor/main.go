@@ -9,19 +9,24 @@ import (
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"labmonitor/internal/app"
 	"labmonitor/internal/config"
 	"labmonitor/internal/email"
+	"labmonitor/internal/events"
 	"labmonitor/internal/llm"
 	"labmonitor/internal/report"
 	"labmonitor/internal/scheduler"
 	"labmonitor/internal/state"
 	"labmonitor/internal/thingspeak"
+	"labmonitor/internal/ui/dashboard"
 )
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	dryRun := flag.Bool("dry-run", false, "run without sending emails (print to stdout instead)")
+	uiFlag := flag.Bool("ui", false, "show interactive terminal dashboard")
 	flag.Parse()
 
 	if *dryRun {
@@ -56,14 +61,39 @@ func main() {
 		log.Fatalf("init state store: %v", err)
 	}
 
-	svc := app.NewService(cfg, tsClient, agg, pb, llmClient, emailSender, store)
-
 	loc := time.Local
+	var (
+		eventsCh  chan events.Event
+		uiProgram *tea.Program
+		uiDone    chan struct{}
+	)
+	if *uiFlag {
+		eventsCh = make(chan events.Event, 128)
+		model := dashboard.NewModel(cfg, *dryRun, eventsCh, loc)
+		uiProgram = tea.NewProgram(model, tea.WithAltScreen())
+		uiDone = make(chan struct{})
+	}
+
+	svc := app.NewService(cfg, tsClient, agg, pb, llmClient, emailSender, store, eventsCh)
+
 	sch, err := scheduler.New(loc)
 	if err != nil {
 		log.Fatalf("init scheduler: %v", err)
 	}
 	log.Println("Services initialized successfully")
+
+	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if uiProgram != nil {
+		go func() {
+			if err := uiProgram.Start(); err != nil {
+				log.Printf("ui error: %v", err)
+			}
+			stop()
+			close(uiDone)
+		}()
+	}
 
 	times := []string{cfg.Schedule.First, cfg.Schedule.Second}
 	job := func(jobCtx context.Context) error {
@@ -81,13 +111,12 @@ func main() {
 		log.Fatalf("schedule jobs: %v", err)
 	}
 
-	signalCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
+	schedulerDone := make(chan struct{})
 	go func() {
 		if err := sch.Start(signalCtx); err != nil {
 			log.Printf("scheduler stopped with error: %v", err)
 		}
+		close(schedulerDone)
 	}()
 
 	log.Println("Running initial assessment...")
@@ -107,5 +136,12 @@ func main() {
 
 	<-signalCtx.Done()
 	log.Println("Shutting down...")
+	<-schedulerDone
+	if eventsCh != nil {
+		close(eventsCh)
+		if uiDone != nil {
+			<-uiDone
+		}
+	}
 	fmt.Println("shutdown complete")
 }

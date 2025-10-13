@@ -41,6 +41,9 @@ go build -o bin/labmonitor ./cmd/labmonitor
 # Run directly
 go run ./cmd/labmonitor -config config.yaml
 
+# Run with terminal dashboard
+go run ./cmd/labmonitor -config config.yaml -ui
+
 # Dry-run mode (no emails sent, output to stdout)
 go run ./cmd/labmonitor -config config.yaml -dry-run
 ```

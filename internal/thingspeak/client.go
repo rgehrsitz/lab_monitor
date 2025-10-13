@@ -32,6 +32,11 @@ type Feed struct {
 	Fields    map[string]float64
 }
 
+type FetchStats struct {
+	Requests int
+	Splits   int
+}
+
 type feedResponse struct {
 	Feeds []feedItem `json:"feeds"`
 }
@@ -49,42 +54,45 @@ type feedItem struct {
 	Field8    *string   `json:"field8"`
 }
 
-func (c *Client) GetFeeds(ctx context.Context, channelID int, start, end time.Time) ([]Feed, error) {
+func (c *Client) GetFeeds(ctx context.Context, channelID int, start, end time.Time) ([]Feed, FetchStats, error) {
 	if end.Before(start) {
-		return nil, fmt.Errorf("end before start")
+		return nil, FetchStats{}, fmt.Errorf("end before start")
 	}
-	feeds, err := c.fetchRange(ctx, channelID, start.UTC(), end.UTC())
+	feeds, stats, err := c.fetchRange(ctx, channelID, start.UTC(), end.UTC())
 	if err != nil {
-		return nil, err
+		return nil, FetchStats{}, err
 	}
 	sort.Slice(feeds, func(i, j int) bool {
 		return feeds[i].CreatedAt.Before(feeds[j].CreatedAt)
 	})
-	return feeds, nil
+	return feeds, stats, nil
 }
 
-func (c *Client) fetchRange(ctx context.Context, channelID int, start, end time.Time) ([]Feed, error) {
+func (c *Client) fetchRange(ctx context.Context, channelID int, start, end time.Time) ([]Feed, FetchStats, error) {
 	if !end.After(start) {
-		return nil, nil
+		return nil, FetchStats{}, nil
 	}
 	duration := end.Sub(start)
 	feeds, err := c.fetchSingle(ctx, channelID, start, end)
 	if err != nil {
-		return nil, err
+		return nil, FetchStats{}, err
 	}
+	stats := FetchStats{Requests: 1}
 	if len(feeds) < maxResultsPerRequest || duration <= minChunkDuration {
-		return feeds, nil
+		return feeds, stats, nil
 	}
 	midpoint := start.Add(duration / 2)
-	first, err := c.fetchRange(ctx, channelID, start, midpoint)
+	first, firstStats, err := c.fetchRange(ctx, channelID, start, midpoint)
 	if err != nil {
-		return nil, err
+		return nil, FetchStats{}, err
 	}
-	second, err := c.fetchRange(ctx, channelID, midpoint, end)
+	second, secondStats, err := c.fetchRange(ctx, channelID, midpoint, end)
 	if err != nil {
-		return nil, err
+		return nil, FetchStats{}, err
 	}
-	return mergeFeeds(first, second), nil
+	stats.Requests += firstStats.Requests + secondStats.Requests
+	stats.Splits = 1 + firstStats.Splits + secondStats.Splits
+	return mergeFeeds(first, second), stats, nil
 }
 
 func (c *Client) fetchSingle(ctx context.Context, channelID int, start, end time.Time) ([]Feed, error) {
