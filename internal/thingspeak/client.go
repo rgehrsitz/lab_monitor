@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 )
 
 const baseURL = "https://api.thingspeak.com/channels"
+
+const (
+	maxResultsPerRequest = 8000
+	minChunkDuration     = time.Minute
+)
 
 type Client struct {
 	HTTPClient *http.Client
@@ -47,7 +53,41 @@ func (c *Client) GetFeeds(ctx context.Context, channelID int, start, end time.Ti
 	if end.Before(start) {
 		return nil, fmt.Errorf("end before start")
 	}
+	feeds, err := c.fetchRange(ctx, channelID, start.UTC(), end.UTC())
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(feeds, func(i, j int) bool {
+		return feeds[i].CreatedAt.Before(feeds[j].CreatedAt)
+	})
+	return feeds, nil
+}
 
+func (c *Client) fetchRange(ctx context.Context, channelID int, start, end time.Time) ([]Feed, error) {
+	if !end.After(start) {
+		return nil, nil
+	}
+	duration := end.Sub(start)
+	feeds, err := c.fetchSingle(ctx, channelID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	if len(feeds) < maxResultsPerRequest || duration <= minChunkDuration {
+		return feeds, nil
+	}
+	midpoint := start.Add(duration / 2)
+	first, err := c.fetchRange(ctx, channelID, start, midpoint)
+	if err != nil {
+		return nil, err
+	}
+	second, err := c.fetchRange(ctx, channelID, midpoint, end)
+	if err != nil {
+		return nil, err
+	}
+	return mergeFeeds(first, second), nil
+}
+
+func (c *Client) fetchSingle(ctx context.Context, channelID int, start, end time.Time) ([]Feed, error) {
 	u, err := url.Parse(fmt.Sprintf("%s/%d/feeds.json", baseURL, channelID))
 	if err != nil {
 		return nil, fmt.Errorf("build url: %w", err)
@@ -55,8 +95,9 @@ func (c *Client) GetFeeds(ctx context.Context, channelID int, start, end time.Ti
 
 	q := u.Query()
 	q.Set("timezone", "UTC")
-	q.Set("start", start.UTC().Format(time.RFC3339))
-	q.Set("end", end.UTC().Format(time.RFC3339))
+	q.Set("start", start.Format(time.RFC3339))
+	q.Set("end", end.Format(time.RFC3339))
+	q.Set("results", strconv.Itoa(maxResultsPerRequest))
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -107,6 +148,32 @@ func (c *Client) GetFeeds(ctx context.Context, channelID int, start, end time.Ti
 	}
 
 	return feeds, nil
+}
+
+func mergeFeeds(a, b []Feed) []Feed {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	combined := make([]Feed, 0, len(a)+len(b))
+	seen := make(map[int]struct{}, len(a)+len(b))
+	add := func(feeds []Feed) {
+		for _, feed := range feeds {
+			if _, ok := seen[feed.EntryID]; ok {
+				continue
+			}
+			seen[feed.EntryID] = struct{}{}
+			combined = append(combined, feed)
+		}
+	}
+	add(a)
+	add(b)
+	sort.Slice(combined, func(i, j int) bool {
+		return combined[i].CreatedAt.Before(combined[j].CreatedAt)
+	})
+	return combined
 }
 
 func (c *Client) http() *http.Client {
