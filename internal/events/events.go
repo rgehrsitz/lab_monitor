@@ -12,6 +12,7 @@ const (
 	KindRunStarted       Kind = "run_started"
 	KindRunCompleted     Kind = "run_completed"
 	KindRunFailed        Kind = "run_failed"
+	KindLLMCall          Kind = "llm_call"
 	KindFetchStarted     Kind = "fetch_started"
 	KindFetchCompleted   Kind = "fetch_completed"
 	KindFetchSplit       Kind = "fetch_split"

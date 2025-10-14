@@ -24,6 +24,23 @@ type OpenAIConfig struct {
 	// request additional historical context within a single run. If 0, a
 	// sensible default is applied by the service.
 	MaxContextAttempts int `yaml:"max_context_attempts"`
+	// InitialTimeoutSeconds caps duration of the initial (canonical) assessment
+	// LLM call. If 0, a default (e.g. 45s) is applied.
+	InitialTimeoutSeconds int `yaml:"initial_timeout_seconds"`
+	// ExtensionTimeoutSeconds caps duration of any extended (need-context)
+	// assessment re-analysis call. If 0, a default (e.g. 25s) is applied.
+	ExtensionTimeoutSeconds int `yaml:"extension_timeout_seconds"`
+	// RequestTimeoutSeconds caps duration of tone transform or other shorter
+	// auxiliary LLM calls. If 0, a default (e.g. 20s) is applied.
+	RequestTimeoutSeconds int `yaml:"request_timeout_seconds"`
+	// ToneTimeoutSeconds caps duration of per-profile tone transform calls. If 0 uses RequestTimeoutSeconds or its default.
+	ToneTimeoutSeconds int `yaml:"tone_timeout_seconds"`
+	// MaxRetries controls how many retries are attempted for retryable
+	// transient LLM errors (429, 5xx, timeouts). If <0 treated as 0.
+	MaxRetries int `yaml:"max_retries"`
+	// RetryBackoffMs is the base backoff in milliseconds for exponential
+	// backoff with jitter. If 0, a default (e.g. 400ms) is used.
+	RetryBackoffMs int `yaml:"retry_backoff_ms"`
 }
 
 type EmailConfig struct {
@@ -126,6 +143,16 @@ func (c Config) validate() error {
 	}
 	if c.State.HistoryPerLab <= 0 {
 		return fmt.Errorf("state history_per_lab must be > 0")
+	}
+	// Soft validation / normalization of OpenAI timeout & retry fields (allow 0 for defaults)
+	if c.OpenAI.MaxRetries < 0 {
+		return fmt.Errorf("openai max_retries must be >= 0")
+	}
+	if c.OpenAI.InitialTimeoutSeconds < 0 || c.OpenAI.ExtensionTimeoutSeconds < 0 || c.OpenAI.RequestTimeoutSeconds < 0 || c.OpenAI.ToneTimeoutSeconds < 0 {
+		return fmt.Errorf("openai timeouts must be >= 0 seconds")
+	}
+	if c.OpenAI.RetryBackoffMs < 0 {
+		return fmt.Errorf("openai retry_backoff_ms must be >= 0")
 	}
 	return nil
 }

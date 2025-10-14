@@ -35,6 +35,84 @@ type Service struct {
 	events         chan<- events.Event
 }
 
+// computeTrendMetrics fetches multi-window summaries per lab to derive mean stats and status counts from history.
+// It reuses the ThingSpeak client; for each channel we fetch four windows (6h,24h,72h,168h) unless baseline already covers one.
+func (s *Service) computeTrendMetrics(ctx context.Context, ref time.Time) *report.TrendMetrics {
+	windows := []time.Duration{6 * time.Hour, 24 * time.Hour, 72 * time.Hour, 168 * time.Hour}
+	// Load history for status counts
+	history, _ := s.store.LoadHistory()
+	statusCounts := make(map[string]map[string]int)
+	for _, rec := range history {
+		for _, lab := range rec.PerLab {
+			if statusCounts[lab.LabName] == nil {
+				statusCounts[lab.LabName] = map[string]int{}
+			}
+			statusCounts[lab.LabName][lab.Status]++
+		}
+	}
+	trendLabs := make([]report.LabTrend, 0, len(s.cfg.Channels))
+	for _, ch := range s.cfg.Channels {
+		meansTemp := report.WindowedMeans{}
+		meansHum := report.WindowedMeans{}
+		var meanMap = map[int]report.Summary{}
+		for _, w := range windows {
+			feeds, _, err := s.thingspeak.GetFeeds(ctx, ch.ID, ref.Add(-w), ref)
+			if err != nil {
+				continue
+			}
+			sum := s.aggregator.Summarize(feeds, ch.ID, ch.TemperatureField, ch.HumidityField, w, ref, ch.Name, fmt.Sprintf("trend %dh", int(w.Hours())))
+			meanMap[int(w.Hours())] = sum
+		}
+		assign := func(ptr **float64, v float64) {
+			vv := v
+			*ptr = &vv
+		}
+		if s, ok := meanMap[6]; ok && s.Samples > 0 {
+			assign(&meansTemp.H6, s.TemperatureStats.Mean)
+			assign(&meansHum.H6, s.HumidityStats.Mean)
+		}
+		if s, ok := meanMap[24]; ok && s.Samples > 0 {
+			assign(&meansTemp.H24, s.TemperatureStats.Mean)
+			assign(&meansHum.H24, s.HumidityStats.Mean)
+		}
+		if s, ok := meanMap[72]; ok && s.Samples > 0 {
+			assign(&meansTemp.H72, s.TemperatureStats.Mean)
+			assign(&meansHum.H72, s.HumidityStats.Mean)
+		}
+		if s, ok := meanMap[168]; ok && s.Samples > 0 {
+			assign(&meansTemp.H168, s.TemperatureStats.Mean)
+			assign(&meansHum.H168, s.HumidityStats.Mean)
+		}
+		var delta24temp *float64
+		var delta24hum *float64
+		// Delta24 = difference between last value of current 24h window and mean of prior 24h block (24-48h ago). Fetch prior window if possible.
+		feedsPrev, _, err := s.thingspeak.GetFeeds(ctx, ch.ID, ref.Add(-48*time.Hour), ref.Add(-24*time.Hour))
+		if err == nil && len(feedsPrev) > 0 {
+			prevSum := s.aggregator.Summarize(feedsPrev, ch.ID, ch.TemperatureField, ch.HumidityField, 24*time.Hour, ref.Add(-24*time.Hour), ch.Name, "trend prev24h")
+			if cur, ok := meanMap[24]; ok && cur.Samples > 0 && prevSum.Samples > 0 {
+				// Use difference of means
+				dt := cur.TemperatureStats.Mean - prevSum.TemperatureStats.Mean
+				dh := cur.HumidityStats.Mean - prevSum.HumidityStats.Mean
+				dtCopy := dt
+				dhCopy := dh
+				delta24temp = &dtCopy
+				delta24hum = &dhCopy
+			}
+		}
+		labTrend := report.LabTrend{Name: ch.Name, Temp: report.MetricTrend{Mean: meansTemp, Delta24: delta24temp}, Humidity: report.MetricTrend{Mean: meansHum, Delta24: delta24hum}, StatusCounts: statusCounts[ch.Name]}
+		trendLabs = append(trendLabs, labTrend)
+	}
+	// sort by name for deterministic ordering
+	for i := 0; i < len(trendLabs)-1; i++ {
+		for j := i + 1; j < len(trendLabs); j++ {
+			if trendLabs[j].Name < trendLabs[i].Name {
+				trendLabs[i], trendLabs[j] = trendLabs[j], trendLabs[i]
+			}
+		}
+	}
+	return &report.TrendMetrics{Labs: trendLabs}
+}
+
 func NewService(cfg config.Config, ts *thingspeak.Client, agg report.Aggregator, pb report.PromptBuilder, llmClient *llm.Client, emailSender *email.Sender, store *state.Store, events chan<- events.Event) *Service {
 	channels := make(map[string]config.ChannelConfig, len(cfg.Channels))
 	for _, ch := range cfg.Channels {
@@ -104,22 +182,7 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("load last report: %w", err)
 	}
-	// Load full history for placeholder trend metrics (status counts only for now)
-	history, _ := s.store.LoadHistory()
-	statusCounts := make(map[string]map[string]int)
-	for _, rec := range history {
-		for _, lab := range rec.PerLab {
-			if statusCounts[lab.LabName] == nil {
-				statusCounts[lab.LabName] = map[string]int{}
-			}
-			statusCounts[lab.LabName][lab.Status]++
-		}
-	}
-	var trendLabs []report.LabTrend
-	for name, counts := range statusCounts {
-		trendLabs = append(trendLabs, report.LabTrend{Name: name, StatusCounts: counts, Temp: report.MetricTrend{Mean: report.WindowedMeans{}}, Humidity: report.MetricTrend{Mean: report.WindowedMeans{}}})
-	}
-	trends := &report.TrendMetrics{Labs: trendLabs}
+	trends := s.computeTrendMetrics(ctx, refTime)
 
 	log.Println("Building analysis prompt...")
 	prompt, err := s.promptBuilder.Build(summaries, lastReport, notes, trends)
@@ -141,8 +204,35 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		"guidance: request the smallest additional window that unblocks your analysis; group labs into one request when they share the same reason/window.",
 	)
 
-	log.Println("Requesting AI analysis...")
-	result, err := s.llmClient.GenerateAssessment(ctx, prompt)
+	// Configure LLM client runtime parameters (idempotent each run)
+	s.llmClient.Configure(
+		time.Duration(s.cfg.OpenAI.InitialTimeoutSeconds)*time.Second,
+		time.Duration(s.cfg.OpenAI.ExtensionTimeoutSeconds)*time.Second,
+		time.Duration(s.cfg.OpenAI.RequestTimeoutSeconds)*time.Second,
+		time.Duration(s.cfg.OpenAI.ToneTimeoutSeconds)*time.Second,
+		s.cfg.OpenAI.MaxRetries,
+		time.Duration(s.cfg.OpenAI.RetryBackoffMs)*time.Millisecond,
+	)
+	// Attach event emitter for observability
+	s.llmClient.SetEventEmitter(func(meta map[string]any) {
+		// Convert to event
+		s.emit(events.KindLLMCall, func(e *events.Event) {
+			// Pack key details into Message
+			if m, ok := meta["kind"].(string); ok {
+				status := "ok"
+				if succ, ok2 := meta["success"].(bool); ok2 && !succ {
+					status = "fail"
+				}
+				lat := meta["latency_ms"]
+				e.Message = fmt.Sprintf("%s %s latency_ms=%v attempt=%v extended=%v", m, status, lat, meta["attempt"], meta["extended"])
+			}
+			if errStr, ok := meta["error"].(string); ok {
+				e.Error = errStr
+			}
+		})
+	})
+	log.Println("Requesting AI analysis (initial)...")
+	result, err := s.llmClient.GenerateAssessment(ctx, prompt, false)
 	if err != nil {
 		runErr := fmt.Errorf("llm assessment: %w", err)
 		s.emit(events.KindRunFailed, func(e *events.Event) {
@@ -158,44 +248,64 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 	for attempt < maxAttempts && result.Assessment.NeedContext != nil && len(result.Assessment.NeedContext.Labs) > 0 {
 		log.Printf("AI requested additional context for %d lab(s), fetching extended data (attempt %d/%d)...", len(result.Assessment.NeedContext.Labs), attempt+1, maxAttempts)
 		attempt++
-		// Ensure the model isn't repeating the same request pattern to avoid infinite loops.
-		rawReq, _ := json.Marshal(result.Assessment.NeedContext.Labs)
+		// Coalesce by lab selecting the largest requested window per lab this round.
+		type reqInfo struct {
+			window time.Duration
+			reason string
+		}
+		labRequests := map[string]reqInfo{}
+		for _, r := range result.Assessment.NeedContext.Labs {
+			w := time.Duration(r.WindowHours) * time.Hour
+			if w <= 0 || w > 7*24*time.Hour {
+				w = baselineWindow
+			}
+			if existing, ok := labRequests[r.Name]; !ok || w > existing.window {
+				labRequests[r.Name] = reqInfo{window: w, reason: r.Reason}
+			}
+		}
+		// Ensure the model isn't repeating exactly same coalesced pattern.
+		rawReq, _ := json.Marshal(labRequests)
 		reqHash := hashString(string(rawReq))
 		if reqHash == prevRequestsHash {
-			log.Println("Detected repeated context request pattern; halting additional fetches.")
+			log.Println("Detected repeated context request pattern after coalescing; halting additional fetches.")
 			break
 		}
 		prevRequestsHash = reqHash
-		additionalSummaries := make([]report.Summary, 0, len(result.Assessment.NeedContext.Labs))
-		s.emit(events.KindContextRequested, func(e *events.Event) {
-			e.Message = fmt.Sprintf("%d request(s)", len(result.Assessment.NeedContext.Labs))
-		})
-		for _, req := range result.Assessment.NeedContext.Labs {
-			ch, ok := s.channelsByName[req.Name]
+		additionalSummaries := make([]report.Summary, 0, len(labRequests))
+		s.emit(events.KindContextRequested, func(e *events.Event) { e.Message = fmt.Sprintf("%d request(s) coalesced", len(labRequests)) })
+		const maxCumulativeHours = 168 // 7d cap
+		for name, info := range labRequests {
+			ch, ok := s.channelsByName[name]
 			if !ok {
 				continue
 			}
-			window := time.Duration(req.WindowHours) * time.Hour
-			if window <= 0 || window > 7*24*time.Hour { // guardrail
-				window = baselineWindow
+			// Cap escalation per lab.
+			already := escalations[name]
+			addHours := int(info.window.Hours())
+			if already+addHours > maxCumulativeHours {
+				addHours = maxCumulativeHours - already
+				if addHours <= 0 {
+					continue
+				}
+				info.window = time.Duration(addHours) * time.Hour
 			}
-			feeds, stats, err := s.thingspeak.GetFeeds(ctx, ch.ID, refTime.Add(-window), refTime)
+			feeds, stats, err := s.thingspeak.GetFeeds(ctx, ch.ID, refTime.Add(-info.window), refTime)
 			if err != nil {
 				log.Printf("context fetch failed for %s: %v", ch.Name, err)
 				continue
 			}
-			summary := s.aggregator.Summarize(feeds, ch.ID, ch.TemperatureField, ch.HumidityField, window, refTime, ch.Name, fmt.Sprintf("context %dh", int(window.Hours())))
+			summary := s.aggregator.Summarize(feeds, ch.ID, ch.TemperatureField, ch.HumidityField, info.window, refTime, ch.Name, fmt.Sprintf("context %dh", int(info.window.Hours())))
 			additionalSummaries = append(additionalSummaries, summary)
 			s.emit(events.KindContextProvided, func(e *events.Event) {
 				e.LabName = ch.Name
 				e.ChannelID = ch.ID
-				e.WindowHours = req.WindowHours
+				e.WindowHours = int(info.window.Hours())
 				e.Requests = stats.Requests
 				e.Samples = len(feeds)
-				e.Message = req.Reason
+				e.Message = info.reason
 				e.Summary = &summary
 			})
-			escalations[ch.Name] += req.WindowHours
+			escalations[ch.Name] += int(info.window.Hours())
 		}
 		if len(additionalSummaries) == 0 {
 			break
@@ -208,11 +318,11 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 			s.emit(events.KindRunFailed, func(e *events.Event) { e.Error = runErr.Error() })
 			return runErr
 		}
-		result, err = s.llmClient.GenerateAssessment(ctx, prompt)
+		result, err = s.llmClient.GenerateAssessment(ctx, prompt, true)
 		if err != nil {
-			runErr := fmt.Errorf("llm extended assessment: %w", err)
-			s.emit(events.KindRunFailed, func(e *events.Event) { e.Error = runErr.Error() })
-			return runErr
+			log.Printf("Extended assessment failed (graceful halt): %v", err)
+			// Graceful: keep last successful result and stop loop
+			break
 		}
 		log.Println("Extended analysis complete")
 		s.emit(events.KindAssessmentReady, func(e *events.Event) { e.Assessment = &result.Assessment })
@@ -232,17 +342,15 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		if profile.Personality != "" && profile.Personality != s.cfg.Style.Personality {
 			tj, err := s.llmClient.TransformAssessmentTone(ctx, canonicalJSON, profile.Personality, profile.SnarkLevel)
 			if err != nil {
-				runErr := fmt.Errorf("tone transform profile %s: %w", profile.Name, err)
-				s.emit(events.KindRunFailed, func(e *events.Event) { e.Error = runErr.Error() })
-				return runErr
+				log.Printf("tone transform failed for profile %s (falling back to canonical): %v", profile.Name, err)
+			} else {
+				var ta report.Assessment
+				if err := json.Unmarshal([]byte(tj), &ta); err != nil {
+					log.Printf("parse transformed assessment failed for profile %s (fallback): %v", profile.Name, err)
+				} else {
+					transformed = ta
+				}
 			}
-			var ta report.Assessment
-			if err := json.Unmarshal([]byte(tj), &ta); err != nil {
-				runErr := fmt.Errorf("parse transformed assessment profile %s: %w", profile.Name, err)
-				s.emit(events.KindRunFailed, func(e *events.Event) { e.Error = runErr.Error() })
-				return runErr
-			}
-			transformed = ta
 		}
 		useIcons := ro.UseIcons
 		useColor := ro.UseColor

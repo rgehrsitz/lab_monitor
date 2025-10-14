@@ -28,6 +28,19 @@ openai:
   # more historical context during a single run. If omitted or 0, defaults to 3.
   # Increase cautiously to balance accuracy vs. latency and API usage.
   max_context_attempts: 3
+  # Timeouts & retries (all optional; 0 applies internal defaults)
+  # Canonical assessment timeout seconds (default 45)
+  initial_timeout_seconds: 45
+  # Extended (need-context) re-analysis timeout seconds (default 25)
+  extension_timeout_seconds: 25
+  # Short request timeout (tone transforms) seconds (default 20)
+  request_timeout_seconds: 20
+  # Per-profile tone transform timeout (default inherits request timeout)
+  tone_timeout_seconds: 20
+  # Retry policy for transient errors (429, 5xx, timeouts)
+  max_retries: 2
+  # Base backoff in ms (exponential with jitter) (default 400)
+  retry_backoff_ms: 400
 
 email:
   # Email configuration (uses AWS SES)

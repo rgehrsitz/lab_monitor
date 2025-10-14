@@ -55,3 +55,24 @@ state:
 		t.Fatalf("load: %v", err)
 	}
 }
+
+func TestConfig_OpenAI_InvalidTimeouts(t *testing.T) {
+	cfg := Config{Schedule: ScheduleConfig{Times: []string{"06:00"}}, Channels: []ChannelConfig{{ID: 1, Name: "Lab", TemperatureField: "t", HumidityField: "h"}}, OpenAI: OpenAIConfig{Model: "gpt-4o", InitialTimeoutSeconds: -1}, Email: EmailConfig{Sender: "sender@example.com", Profiles: []EmailProfile{{Name: "p", Recipients: []string{"a@example.com"}}}}, State: StateConfig{Directory: "/tmp", HistoryPerLab: 2}}
+	if err := cfg.validate(); err == nil {
+		t.Error("expected error for negative initial timeout")
+	}
+}
+
+func TestConfig_OpenAI_InvalidRetries(t *testing.T) {
+	cfg := Config{Schedule: ScheduleConfig{Times: []string{"06:00"}}, Channels: []ChannelConfig{{ID: 1, Name: "Lab", TemperatureField: "t", HumidityField: "h"}}, OpenAI: OpenAIConfig{Model: "gpt-4o", MaxRetries: -2}, Email: EmailConfig{Sender: "sender@example.com", Profiles: []EmailProfile{{Name: "p", Recipients: []string{"a@example.com"}}}}, State: StateConfig{Directory: "/tmp", HistoryPerLab: 2}}
+	if err := cfg.validate(); err == nil {
+		t.Error("expected error for negative retries")
+	}
+}
+
+func TestConfig_OpenAI_InvalidToneTimeout(t *testing.T) {
+	cfg := Config{Schedule: ScheduleConfig{Times: []string{"06:00"}}, Channels: []ChannelConfig{{ID: 1, Name: "Lab", TemperatureField: "t", HumidityField: "h"}}, OpenAI: OpenAIConfig{Model: "gpt-4o", ToneTimeoutSeconds: -5}, Email: EmailConfig{Sender: "sender@example.com", Profiles: []EmailProfile{{Name: "p", Recipients: []string{"a@example.com"}}}}, State: StateConfig{Directory: "/tmp", HistoryPerLab: 2}}
+	if err := cfg.validate(); err == nil {
+		t.Error("expected error for negative tone timeout")
+	}
+}

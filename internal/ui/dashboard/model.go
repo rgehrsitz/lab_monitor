@@ -277,17 +277,20 @@ func (m Model) renderLabs() string {
 		lines := []string{labTitleStyle.Render(fmt.Sprintf("%s  #%d", name, lab.channelID)), statusBlock}
 		if lab.summary != nil {
 			sum := lab.summary
-			lines = appendWrappedIndent(lines, infoStyle.Render(fmt.Sprintf("Window %s • Samples %d • Requests %d", sum.WindowLabel, sum.Samples, lab.requests)), cardContentWidth, "  ")
-			lines = appendWrappedIndent(lines, infoStyle.Render(fmt.Sprintf("Temp %.1f°F avg %.1f°F range %.1f-%.1f°F", sum.LatestTemperature, sum.TemperatureStats.Mean, sum.TemperatureStats.Min, sum.TemperatureStats.Max)), cardContentWidth, "  ")
-			lines = appendWrappedIndent(lines, infoStyle.Render(fmt.Sprintf("Humidity %.1f%% avg %.1f%% range %.1f-%.1f%%", sum.LatestHumidity, sum.HumidityStats.Mean, sum.HumidityStats.Min, sum.HumidityStats.Max)), cardContentWidth, "  ")
+			raw := fmt.Sprintf("Window %s • Samples %d • Requests %d", sum.WindowLabel, sum.Samples, lab.requests)
+			lines = appendStyledWrapped(lines, raw, cardContentWidth, "  ", infoStyle)
+			raw = fmt.Sprintf("Temp %.1f°F avg %.1f°F range %.1f-%.1f°F", sum.LatestTemperature, sum.TemperatureStats.Mean, sum.TemperatureStats.Min, sum.TemperatureStats.Max)
+			lines = appendStyledWrapped(lines, raw, cardContentWidth, "  ", infoStyle)
+			raw = fmt.Sprintf("Humidity %.1f%% avg %.1f%% range %.1f-%.1f%%", sum.LatestHumidity, sum.HumidityStats.Mean, sum.HumidityStats.Min, sum.HumidityStats.Max)
+			lines = appendStyledWrapped(lines, raw, cardContentWidth, "  ", infoStyle)
 		} else {
-			lines = appendWrappedIndent(lines, infoStyle.Render("No data yet"), cardContentWidth, "  ")
+			lines = appendStyledWrapped(lines, "No data yet", cardContentWidth, "  ", infoStyle)
 		}
 		if lab.details != "" {
-			lines = appendWrappedIndent(lines, detailStyle.Render(lab.details), cardContentWidth, "  ")
+			lines = appendStyledWrapped(lines, lab.details, cardContentWidth, "  ", detailStyle)
 		}
 		if !lab.updated.IsZero() {
-			lines = appendWrappedIndent(lines, timestampStyle.Render("Updated "+lab.updated.In(m.loc).Format(time.Kitchen)), cardContentWidth, "  ")
+			lines = appendStyledWrapped(lines, "Updated "+lab.updated.In(m.loc).Format(time.Kitchen), cardContentWidth, "  ", timestampStyle)
 		}
 		cards = append(cards, labCardStyle.Render(strings.Join(lines, "\n")))
 	}
@@ -301,7 +304,7 @@ func (m Model) renderLog() string {
 	}
 	wrapped := make([]string, 0, len(m.log))
 	for _, line := range m.log {
-		wrapped = append(wrapped, wrapWithIndent(logStyle.Render(line), logContentWidth, "  "))
+		wrapped = appendStyledWrapped(wrapped, line, logContentWidth, "  ", logStyle)
 	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -364,31 +367,22 @@ func statusStyle(status string) lipgloss.Style {
 	}
 }
 
-func appendWrappedIndent(lines []string, text string, width int, indent string) []string {
-	if text == "" {
+// appendStyledWrapped wraps raw text and applies style line-by-line so continuation
+// lines retain the same color/style. Indentation added to continuation lines.
+func appendStyledWrapped(lines []string, raw string, width int, indent string, style lipgloss.Style) []string {
+	if raw == "" {
 		return lines
 	}
-	wrapped := wrapWithIndent(text, width, indent)
-	return append(lines, strings.Split(wrapped, "\n")...)
-}
-
-func wrapWithIndent(text string, width int, indent string) string {
-	if text == "" {
-		return ""
-	}
 	if width <= 0 {
-		width = lipgloss.Width(text)
+		width = lipgloss.Width(raw)
 	}
-	wrapped := wordwrap.String(text, width)
-	if indent == "" {
-		return wrapped
+	wrapped := wordwrap.String(raw, width)
+	parts := strings.Split(wrapped, "\n")
+	for i, p := range parts {
+		if i > 0 && indent != "" {
+			p = indent + strings.TrimLeft(p, " ")
+		}
+		parts[i] = style.Render(p)
 	}
-	lines := strings.Split(wrapped, "\n")
-	if len(lines) == 0 {
-		return ""
-	}
-	for i := 1; i < len(lines); i++ {
-		lines[i] = indent + strings.TrimLeft(lines[i], " ")
-	}
-	return strings.Join(lines, "\n")
+	return append(lines, parts...)
 }

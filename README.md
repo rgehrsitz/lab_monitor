@@ -101,7 +101,7 @@ Tests cover:
 ## Features
 
 ### Intelligent Context Escalation
-The AI can request additional historical data if needed for proper analysis. The system automatically fetches extended time windows when the model determines more context is necessary. You can control the maximum number of iterations via `openai.max_context_attempts`.
+The AI can request additional historical data if needed for proper analysis. Requests in a single round are coalesced per lab (largest window wins) and cumulative per-lab expansion is capped at 7 days to bound latency and cost. Control iterations via `openai.max_context_attempts`.
 
 Recommended values: 2–4. Higher values may increase latency and API usage without proportional benefit.
 
@@ -159,13 +159,8 @@ Emoji & Flair:
 
 Migration Note: If you previously had `email.recipients` or `email.recipients_detailed`, create one or more `profiles` and move those addresses under `recipients:` arrays. The application now fails fast if no profiles are defined.
 
-### Trend Metrics (Scaffolding)
-The system is being extended to provide structured multi-window trend metrics to the model instead of shipping an arbitrary number of past reports.
-
-Planned buckets (UTC-relative to run time):
-- 6h, 24h, 72h, 168h (7d)
-
-Proposed data shape (Go struct and JSON excerpt):
+### Trend Metrics
+Structured multi-window statistics are computed per lab and provided to the model, replacing the need to send a long tail of prior reports. Buckets: 6h, 24h, 72h, 168h (7d). A prior 24h block (24–48h ago) is compared to the current 24h mean to yield `delta_24h`.
 ```jsonc
 {
    "trend_metrics": {
@@ -181,17 +176,16 @@ Proposed data shape (Go struct and JSON excerpt):
 }
 ```
 
-Computation (initial placeholder):
-1. Load historical `ReportRecord`s from state.
-2. For each lab, aggregate last occurrence per bucket (simple rolling mean using available per-report summaries—later may incorporate raw feeds if retained).
-3. Provide deltas (e.g., 24h change) and counts of statuses across history window.
-4. Inject into prompt JSON (`trend_metrics`) so the LLM can reason about persistent vs. transient changes without requesting a long chain of prior reports.
+Computation:
+1. Fetch raw ThingSpeak data per lab for each window (6h/24h/72h/168h) at run time.
+2. Compute mean temperature & humidity per window; compute `delta_24h` as difference between current 24h mean and prior 24–48h mean.
+3. Derive status counts from persisted report history.
+4. Sort labs by name for deterministic prompt ordering; reuse metrics for any extended (need-context) re-analysis.
 
-Instruction Adjustments (implemented when scaffolding lands):
-- Encourage the model to reference provided multi-window statistics instead of asking for broader history unless a genuinely novel window is required.
-- Explicitly caution against redundant context requests when bucketed metrics already answer the trend question.
+The model is instructed to lean on these bucketed metrics before requesting additional broad history.
 
-This scaffolding reduces token usage and supports consistent, structured trend reasoning.
+### OpenAI Timeouts & Retries
+`openai.initial_timeout_seconds`, `extension_timeout_seconds`, and `request_timeout_seconds` bound latency for canonical, extended, and tone-transform calls. Transient errors (timeouts, 429, 5xx) are retried up to `openai.max_retries` with exponential backoff (`retry_backoff_ms`). Extended assessment failures degrade gracefully (the last successful assessment is kept) rather than aborting the run.
 
 ### Dry-Run Mode
 Test the entire pipeline without sending emails:
