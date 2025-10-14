@@ -42,7 +42,10 @@ func main() {
 	log.Println("Initializing services...")
 	tsClient := thingspeak.NewClient()
 	agg := report.NewAggregator()
-	pb := report.NewPromptBuilder()
+	pb := report.NewPromptBuilderWithStyle(report.Style{
+		Personality: cfg.Style.Personality,
+		SnarkLevel:  cfg.Style.SnarkLevel,
+	})
 
 	llmClient, err := llm.NewClient()
 	if err != nil {

@@ -14,8 +14,10 @@ Lab Monitor is a Go service that pulls temperature and humidity readings from Th
    - **`channels`**: ThingSpeak channel IDs and data field names for each lab.
    - **`openai.model`**: Target model (e.g., `gpt-4o-mini-2025-01-07`, `gpt-4o`, `gpt-4-turbo`).
    - **`openai.max_context_attempts`** (optional): How many back-and-forth rounds the model can request additional historical data within a single run. Defaults to 3 if omitted.
-   - **`email.sender` / `email.recipients`**: SES-verified sender and list of recipients.
+   - **`email.sender` / `email.profiles`**: SES-verified sender and grouped recipient profiles (see Profiles section). Legacy `email.recipients` and `email.recipients_detailed` have been removed.
    - **`state`**: Directory for cached report history.
+   - **`style`** (optional): Output tone and visuals: `personality` (neutral, friendly, snarky, humorous), `snark_level` (0–3), `use_icons` (emoji), `use_color` (HTML color accents).
+   - (Removed) `email.recipients_detailed`: Replaced by profile-level overrides. Migrate by grouping recipients sharing tone.
 2. Optionally create `config.local.yaml` (gitignored) for machine-specific overrides.
 
 ## Environment Variables
@@ -117,7 +119,79 @@ Automatically computes for each lab:
 
 ### Dual Report Formats
 - **Plain text**: Clean, readable format for email clients
-- **HTML**: Rich formatting with tables for visual presentation
+- **HTML**: Rich formatting with tables for visual presentation; optional icons and color accents to emphasize status
+
+### Profiles, Personality, and Emoji
+Email sending is now profile-based:
+
+```yaml
+email:
+   sender: sender@example.com
+   subject_prefix: "[Lab Monitor]"
+   profiles:
+      - name: engineering
+         recipients: ["eng1@example.com", "eng2@example.com"]
+         personality: snarky
+         snark_level: 2
+         use_icons: true
+         use_color: true
+      - name: management
+         recipients: ["mgr@example.com"]
+         personality: friendly
+         use_icons: true
+         use_color: true
+      - name: archive
+         recipients: ["archive@example.com"]  # inherits global neutral style
+```
+
+Global style (top-level `style:`) supplies defaults; each profile can override `personality`, `snark_level`, `use_icons`, `use_color`.
+
+Tone guidelines:
+- neutral: concise, professional
+- friendly: supportive, upbeat
+- humorous: light wit, never detracting from clarity
+- snarky: dry cheekiness scaled by `snark_level` (0–3) while staying respectful
+
+Emoji & Flair:
+- The LLM may include tasteful emoji in its JSON summary/details for non-neutral personalities.
+- Formatter optionally adds status icons/colors (controlled by global or per-profile `use_icons` / `use_color`).
+- Avoid excessive emojis; they should reinforce meaning (e.g., alerts, improvements) not distract.
+
+Migration Note: If you previously had `email.recipients` or `email.recipients_detailed`, create one or more `profiles` and move those addresses under `recipients:` arrays. The application now fails fast if no profiles are defined.
+
+### Trend Metrics (Scaffolding)
+The system is being extended to provide structured multi-window trend metrics to the model instead of shipping an arbitrary number of past reports.
+
+Planned buckets (UTC-relative to run time):
+- 6h, 24h, 72h, 168h (7d)
+
+Proposed data shape (Go struct and JSON excerpt):
+```jsonc
+{
+   "trend_metrics": {
+      "labs": [
+         {
+            "name": "Lab A",
+            "temp": {"mean": {"6h": 22.1, "24h": 21.8, "72h": 21.5, "168h": 21.2}, "delta_24h": 0.3},
+            "humidity": {"mean": {"6h": 41.2, "24h": 42.0, "72h": 43.5, "168h": 44.1}, "delta_24h": -0.8},
+            "status_counts": {"normal": 5, "watch": 1, "alert": 0}
+         }
+      ]
+   }
+}
+```
+
+Computation (initial placeholder):
+1. Load historical `ReportRecord`s from state.
+2. For each lab, aggregate last occurrence per bucket (simple rolling mean using available per-report summaries—later may incorporate raw feeds if retained).
+3. Provide deltas (e.g., 24h change) and counts of statuses across history window.
+4. Inject into prompt JSON (`trend_metrics`) so the LLM can reason about persistent vs. transient changes without requesting a long chain of prior reports.
+
+Instruction Adjustments (implemented when scaffolding lands):
+- Encourage the model to reference provided multi-window statistics instead of asking for broader history unless a genuinely novel window is required.
+- Explicitly caution against redundant context requests when bucketed metrics already answer the trend question.
+
+This scaffolding reduces token usage and supports consistent, structured trend reasoning.
 
 ### Dry-Run Mode
 Test the entire pipeline without sending emails:

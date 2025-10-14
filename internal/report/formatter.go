@@ -7,14 +7,54 @@ import (
 	"strings"
 )
 
-func FormatText(assessment Assessment, summaries []Summary) string {
+// RenderOptions tunes the output style in text/HTML formats.
+type RenderOptions struct {
+	UseIcons bool
+	UseColor bool // Only affects HTML
+}
+
+func statusIcon(status string) string {
+	switch strings.ToLower(status) {
+	case "alert":
+		return "🚨"
+	case "watch":
+		return "⚠️"
+	default:
+		return "✅"
+	}
+}
+
+func statusColor(status string) string {
+	switch strings.ToLower(status) {
+	case "alert":
+		return "#b00020" // red
+	case "watch":
+		return "#c57f00" // amber
+	default:
+		return "#1b5e20" // green
+	}
+}
+
+func FormatText(assessment Assessment, summaries []Summary, opts ...RenderOptions) string {
 	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("Status: %s\n", strings.ToUpper(assessment.Status)))
+	var ro RenderOptions
+	if len(opts) > 0 {
+		ro = opts[0]
+	}
+	icon := ""
+	if ro.UseIcons {
+		icon = statusIcon(assessment.Status) + " "
+	}
+	buf.WriteString(fmt.Sprintf("%sStatus: %s\n", icon, strings.ToUpper(assessment.Status)))
 	if assessment.Summary != "" {
 		buf.WriteString(fmt.Sprintf("Summary: %s\n\n", assessment.Summary))
 	}
 	for _, lab := range assessment.Labs {
-		buf.WriteString(fmt.Sprintf("Lab %s [%s]\n", lab.Name, strings.ToUpper(lab.Status)))
+		ic := ""
+		if ro.UseIcons {
+			ic = statusIcon(lab.Status) + " "
+		}
+		buf.WriteString(fmt.Sprintf("%sLab %s [%s]\n", ic, lab.Name, strings.ToUpper(lab.Status)))
 		if lab.Details != "" {
 			buf.WriteString(fmt.Sprintf("  Details: %s\n", lab.Details))
 		}
@@ -56,16 +96,36 @@ func FormatText(assessment Assessment, summaries []Summary) string {
 	return buf.String()
 }
 
-func FormatHTML(assessment Assessment, summaries []Summary) string {
+func FormatHTML(assessment Assessment, summaries []Summary, opts ...RenderOptions) string {
+	var ro RenderOptions
+	if len(opts) > 0 {
+		ro = opts[0]
+	}
 	var buf bytes.Buffer
 	buf.WriteString("<html><body>")
-	buf.WriteString(fmt.Sprintf("<h2>Status: %s</h2>", html.EscapeString(strings.ToUpper(assessment.Status))))
+	overallIcon := ""
+	if ro.UseIcons {
+		overallIcon = statusIcon(assessment.Status) + " "
+	}
+	style := ""
+	if ro.UseColor {
+		style = fmt.Sprintf(" style=\"color:%s\"", statusColor(assessment.Status))
+	}
+	buf.WriteString(fmt.Sprintf("<h2%s>%sStatus: %s</h2>", style, overallIcon, html.EscapeString(strings.ToUpper(assessment.Status))))
 	if assessment.Summary != "" {
 		buf.WriteString(fmt.Sprintf("<p>%s</p>", html.EscapeString(assessment.Summary)))
 	}
 	for _, lab := range assessment.Labs {
 		buf.WriteString("<section>")
-		buf.WriteString(fmt.Sprintf("<h3>Lab %s [%s]</h3>", html.EscapeString(lab.Name), html.EscapeString(strings.ToUpper(lab.Status))))
+		labIcon := ""
+		if ro.UseIcons {
+			labIcon = statusIcon(lab.Status) + " "
+		}
+		labStyle := ""
+		if ro.UseColor {
+			labStyle = fmt.Sprintf(" style=\"color:%s\"", statusColor(lab.Status))
+		}
+		buf.WriteString(fmt.Sprintf("<h3%s>%sLab %s [%s]</h3>", labStyle, labIcon, html.EscapeString(lab.Name), html.EscapeString(strings.ToUpper(lab.Status))))
 		if lab.Details != "" {
 			buf.WriteString(fmt.Sprintf("<p>%s</p>", html.EscapeString(lab.Details)))
 		}

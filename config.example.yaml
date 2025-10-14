@@ -32,12 +32,41 @@ openai:
 email:
   # Email configuration (uses AWS SES)
   sender: "your-email@example.com"  # Verified sender email in AWS SES
-  recipients:
-    - "recipient1@example.com"  # Report recipients
-    - "recipient2@example.com"
   subject_prefix: "[Lab Monitor]"  # Prefix for email subject lines
+  # PROFILES-ONLY (migration): legacy 'recipients' and 'recipients_detailed' are removed.
+  # Define one or more profiles that group recipients sharing tone/rendering preferences.
+  profiles:
+    - name: "engineering"
+      recipients:
+        - "eng1@example.com"
+        - "eng2@example.com"
+      # Optional per-profile overrides (fall back to global style if omitted)
+      personality: snarky   # overrides global personality
+      snark_level: 2        # 0-3, only relevant if personality is snarky/humorous
+      use_icons: true       # override global use_icons
+      use_color: true       # override global use_color
+    - name: "management"
+      recipients:
+        - "mgr@example.com"
+      personality: friendly
+      snark_level: 0
+      use_icons: true
+      use_color: true
+    - name: "neutral_archive"
+      recipients:
+        - "archive@example.com"
+      # No overrides -> inherits global neutral tone
 
 state:
   # Local state storage configuration
   directory: "state"  # Directory to store historical data
   history_per_lab: 5  # Number of past reports to keep per lab
+
+style:
+  # Personality options: neutral (default), friendly, snarky, humorous
+  personality: neutral
+  # 0-3; only applies to snarky/humorous
+  snark_level: 0
+  # Enable emoji and color in HTML report
+  use_icons: true
+  use_color: true

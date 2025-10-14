@@ -69,3 +69,29 @@ func (c *Client) GenerateAssessment(ctx context.Context, prompt string) (*Assess
 	}
 	return &AssessmentResult{Assessment: assessment, Raw: content}, nil
 }
+
+// TransformAssessmentTone rewrites textual fields of an existing assessment JSON
+// (summary, lab details, recommendations) to match a target style while keeping
+// structure and non-textual data identical.
+func (c *Client) TransformAssessmentTone(ctx context.Context, assessmentJSON string, personality string, snarkLevel int) (string, error) {
+	if c.model == "" {
+		c.model = "gpt-4o"
+	}
+	sys := "You rewrite JSON values for summary/details/recommendations to adjust tone. Do not add or remove fields. Do not change status values or lab names. Return only JSON."
+	style := fmt.Sprintf("personality=%s snark_level=%d", personality, snarkLevel)
+	user := fmt.Sprintf("Style spec: %s\nJSON:\n%s", style, assessmentJSON)
+	resp, err := c.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model: c.model,
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: sys},
+			{Role: openai.ChatMessageRoleUser, Content: user},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("openai rewrite: %w", err)
+	}
+	if len(resp.Choices) == 0 {
+		return "", errors.New("openai returned no choices")
+	}
+	return resp.Choices[0].Message.Content, nil
+}
