@@ -82,9 +82,16 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
+		// Quit only on Ctrl+C or Alt+Q to avoid accidental exits
+		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
+		}
+		// Robust Alt+Q detection across terminals: check Alt flag and rune
+		if msg.Alt && len(msg.Runes) == 1 {
+			r := msg.Runes[0]
+			if r == 'q' || r == 'Q' {
+				return m, tea.Quit
+			}
 		}
 	case eventMsg:
 		m.handleEvent(msg.event)
@@ -144,7 +151,7 @@ func (m Model) View() string {
 	labsView := m.renderLabs()
 	logView := m.renderLog()
 
-	body := lipgloss.JoinVertical(lipgloss.Left, header, labsView, logView, footerStyle.Render("Press q to exit dashboard"))
+	body := lipgloss.JoinVertical(lipgloss.Left, header, labsView, logView, footerStyle.Render("Press Alt+Q or Ctrl+C to exit dashboard"))
 	return lipgloss.NewStyle().Padding(1, 2).Render(body)
 }
 

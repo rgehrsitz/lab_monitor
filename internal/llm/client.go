@@ -189,9 +189,9 @@ func (c *Client) GenerateAssessment(ctx context.Context, prompt string, extended
 // structure and non-textual data identical.
 func (c *Client) TransformAssessmentTone(ctx context.Context, assessmentJSON string, personality string, snarkLevel int) (string, error) {
 	to := c.toneTimeout
-	sys := "You rewrite JSON values for summary/details/recommendations to adjust tone. Do not add or remove fields. Do not change status values or lab names. Return only JSON."
+	sys := "You rewrite JSON values for summary/details/recommendations to adjust tone. Keep structure identical and return only JSON (no markdown). Do not add/remove fields. Do not change status values, lab names, or recommendations count. For humorous/snarky styles, you may add tasteful, relevant emoji beyond status icons where it enhances tone; keep it professional and not excessive."
 	style := fmt.Sprintf("personality=%s snark_level=%d", personality, snarkLevel)
-	user := fmt.Sprintf("Style spec: %s\nJSON:\n%s", style, assessmentJSON)
+	user := fmt.Sprintf("Style spec: %s\nRewrite only the textual fields (summary, lab details, recommendations) to match the style while preserving meaning.\nJSON:\n%s", style, assessmentJSON)
 	req := openai.ChatCompletionRequest{
 		Messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleSystem, Content: sys},

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"labmonitor/internal/config"
@@ -359,6 +360,14 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		}
 		if profile.UseColor != nil {
 			useColor = *profile.UseColor
+		}
+		// For humorous/snarky profiles, if not explicitly set, prefer not forcing fixed status icons
+		// so the model's chosen emoji can be used freely in text.
+		if profile.UseIcons == nil {
+			p := strings.ToLower(strings.TrimSpace(profile.Personality))
+			if p == "humorous" || p == "snarky" {
+				useIcons = false
+			}
 		}
 		pro := report.RenderOptions{UseIcons: useIcons, UseColor: useColor}
 		textBody := report.FormatText(transformed, allSummaries, pro)

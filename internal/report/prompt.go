@@ -37,6 +37,7 @@ type promptPayload struct {
 
 func (p PromptBuilder) Build(summaries []Summary, last *state.ReportRecord, notes []string, trends *TrendMetrics) (string, error) {
 	tone := p.toneInstructions()
+	emoji := p.emojiGuidance()
 	payload := promptPayload{
 		Timestamp:        time.Now().UTC(),
 		Notes:            notes,
@@ -53,7 +54,7 @@ func (p PromptBuilder) Build(summaries []Summary, last *state.ReportRecord, note
 			"Otherwise, provide actionable analysis covering notable trends, spikes, comfort issues, and recommendations. Prefer concise sentences.",
 			"When appropriate based on current data and the previous report, briefly acknowledge sustained improvements (praise) or persistent incidents (incident-aware).",
 			tone,
-			"If the tone is not neutral, you may include tasteful, minimal emoji in the summary and lab details to add personality. Do not overuse them.",
+			emoji,
 			"Always return valid JSON without markdown fences or commentary.",
 		}, "\n"),
 	}
@@ -101,5 +102,36 @@ func (p PromptBuilder) toneInstructions() string {
 		return fmt.Sprintf("%s %s. Keep it concise. Do not be rude. Focus on clarity.", base, flavor)
 	default:
 		return "Use a neutral, concise, professional tone."
+	}
+}
+
+// emojiGuidance tailors emoji usage guidance by personality/snark level.
+// For humorous/snarky styles, we explicitly allow broader emoji usage beyond just status icons,
+// while keeping it tasteful and sparse. For neutral/friendly, keep minimal.
+func (p PromptBuilder) emojiGuidance() string {
+	personality := strings.ToLower(strings.TrimSpace(p.style.Personality))
+	snark := p.style.SnarkLevel
+	if snark < 0 {
+		snark = 0
+	}
+	if snark > 3 {
+		snark = 3
+	}
+	switch personality {
+	case "humorous", "snarky":
+		// Relax constraints so the model can choose fitting emojis (not just status icons)
+		// but keep it tasteful and relevant to the content.
+		switch snark {
+		case 0, 1:
+			return "If the tone is playful, you may sprinkle in occasional, relevant emoji (not only status icons) to add charm. Keep usage light and contextual."
+		case 2:
+			return "You may use relevant, witty emoji where it enhances the humor or emphasis. Keep it tasteful and avoid clutter."
+		default:
+			return "Feel free to use expressive, relevant emoji to punch up the humor or snark (beyond status icons), but stay professional and do not overdo it."
+		}
+	case "friendly":
+		return "You may include a few gentle, relevant emoji to keep it upbeat. Use sparingly."
+	default:
+		return "If the tone is neutral, avoid emoji unless they directly aid clarity."
 	}
 }
