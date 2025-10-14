@@ -8,8 +8,7 @@ import (
 )
 
 type ScheduleConfig struct {
-	First  string `yaml:"first"`
-	Second string `yaml:"second"`
+	Times []string `yaml:"times"`
 }
 
 type ChannelConfig struct {
@@ -58,8 +57,8 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) validate() error {
-	if c.Schedule.First == "" || c.Schedule.Second == "" {
-		return fmt.Errorf("schedule times must be provided")
+	if len(c.Schedule.Times) == 0 {
+		return fmt.Errorf("at least one schedule time must be provided")
 	}
 	if len(c.Channels) == 0 {
 		return fmt.Errorf("at least one channel must be configured")

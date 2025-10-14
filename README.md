@@ -1,6 +1,6 @@
 # Lab Monitor
 
-Lab Monitor is a Go service that pulls temperature and humidity readings from ThingSpeak, summarizes recent conditions, requests an assessment from OpenAI, and emails a twice-daily report via AWS SES.
+Lab Monitor is a Go service that pulls temperature and humidity readings from ThingSpeak, summarizes recent conditions, requests an assessment from OpenAI, and emails scheduled reports via AWS SES.
 
 ## Prerequisites
 - Go 1.22 or newer
@@ -10,7 +10,7 @@ Lab Monitor is a Go service that pulls temperature and humidity readings from Th
 
 ## Configuration
 1. Copy `config.example.yaml` to `config.yaml` and edit the following sections:
-   - **`schedule`**: Local times for the two daily runs (default `06:00` and `16:00`).
+   - **`schedule.times`**: Array of local times for daily runs (e.g., `["06:00", "16:00"]`). You can specify as many times as needed.
    - **`channels`**: ThingSpeak channel IDs and data field names for each lab.
    - **`openai.model`**: Target model (e.g., `gpt-4o-mini-2025-01-07`, `gpt-4o`, `gpt-4-turbo`).
    - **`email.sender` / `email.recipients`**: SES-verified sender and list of recipients.

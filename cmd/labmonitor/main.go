@@ -95,7 +95,7 @@ func main() {
 		}()
 	}
 
-	times := []string{cfg.Schedule.First, cfg.Schedule.Second}
+	times := cfg.Schedule.Times
 	job := func(jobCtx context.Context) error {
 		runCtx, cancel := context.WithTimeout(jobCtx, 3*time.Minute)
 		defer cancel()
@@ -126,7 +126,7 @@ func main() {
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("Lab Monitor is running")
-	log.Printf("Scheduled runs: %s and %s daily", cfg.Schedule.First, cfg.Schedule.Second)
+	log.Printf("Scheduled runs: %v daily", cfg.Schedule.Times)
 	log.Printf("Monitoring %d lab(s)", len(cfg.Channels))
 	for _, ch := range cfg.Channels {
 		log.Printf("  - %s (Channel ID: %d)", ch.Name, ch.ID)

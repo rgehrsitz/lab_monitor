@@ -3,8 +3,10 @@
 
 schedule:
   # Times in 24-hour format (HH:MM) for daily reports
-  first: "06:00"
-  second: "16:00"
+  # You can specify as many times as you want
+  times:
+    - "06:00"
+    - "16:00"
 
 channels:
   # ThingSpeak channel configurations

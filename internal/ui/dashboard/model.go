@@ -58,13 +58,7 @@ func NewModel(cfg config.Config, dryRun bool, events <-chan events.Event, loc *t
 	for _, ch := range cfg.Channels {
 		labs[ch.Name] = &labState{channelID: ch.ID}
 	}
-	schedule := []string{}
-	if cfg.Schedule.First != "" {
-		schedule = append(schedule, cfg.Schedule.First)
-	}
-	if cfg.Schedule.Second != "" {
-		schedule = append(schedule, cfg.Schedule.Second)
-	}
+	schedule := cfg.Schedule.Times
 	if loc == nil {
 		loc = time.Local
 	}
