@@ -13,6 +13,7 @@ Lab Monitor is a Go service that pulls temperature and humidity readings from Th
    - **`schedule.times`**: Array of local times for daily runs (e.g., `["06:00", "16:00"]`). You can specify as many times as needed.
    - **`channels`**: ThingSpeak channel IDs and data field names for each lab.
    - **`openai.model`**: Target model (e.g., `gpt-4o-mini-2025-01-07`, `gpt-4o`, `gpt-4-turbo`).
+   - **`openai.max_context_attempts`** (optional): How many back-and-forth rounds the model can request additional historical data within a single run. Defaults to 3 if omitted.
    - **`email.sender` / `email.recipients`**: SES-verified sender and list of recipients.
    - **`state`**: Directory for cached report history.
 2. Optionally create `config.local.yaml` (gitignored) for machine-specific overrides.
@@ -98,7 +99,9 @@ Tests cover:
 ## Features
 
 ### Intelligent Context Escalation
-The AI can request additional historical data if needed for proper analysis. The system automatically fetches extended time windows (up to 3 iterations) when the model determines more context is necessary.
+The AI can request additional historical data if needed for proper analysis. The system automatically fetches extended time windows when the model determines more context is necessary. You can control the maximum number of iterations via `openai.max_context_attempts`.
+
+Recommended values: 2–4. Higher values may increase latency and API usage without proportional benefit.
 
 ### State Persistence
 - Maintains history of the last N reports (configurable via `state.history_per_lab`)

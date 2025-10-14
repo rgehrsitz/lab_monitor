@@ -18,7 +18,9 @@ import (
 )
 
 const baselineWindow = 24 * time.Hour
-const maxContextAttempts = 10
+
+// defaultMaxContextAttempts is used when config doesn't specify a value.
+const defaultMaxContextAttempts = 3
 
 type Service struct {
 	cfg            config.Config
@@ -89,6 +91,8 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		})
 		summaries = append(summaries, summary)
 	}
+	// Informative notes for the model that don't change semantics but can
+	// help it self-limit context requests.
 	notes := []string{
 		fmt.Sprintf("report_generated_utc=%s", refTime.Format(time.RFC3339)),
 		fmt.Sprintf("baseline_window_hours=%d", int(baselineWindow.Hours())),
@@ -110,6 +114,16 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		return runErr
 	}
 
+	// Determine context attempt budget for this run
+	maxAttempts := s.cfg.OpenAI.MaxContextAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = defaultMaxContextAttempts
+	}
+	notes = append(notes,
+		fmt.Sprintf("max_context_attempts=%d", maxAttempts),
+		"guidance: request the smallest additional window that unblocks your analysis; group labs into one request when they share the same reason/window.",
+	)
+
 	log.Println("Requesting AI analysis...")
 	result, err := s.llmClient.GenerateAssessment(ctx, prompt)
 	if err != nil {
@@ -125,23 +139,33 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 	})
 	allSummaries := append([]report.Summary(nil), summaries...)
 	escalations := make(map[string]int)
-	attempt := 1
-	for attempt < maxContextAttempts && result.Assessment.NeedContext != nil && len(result.Assessment.NeedContext.Labs) > 0 {
-		log.Printf("AI requested additional context for %d lab(s), fetching extended data (attempt %d/%d)...", len(result.Assessment.NeedContext.Labs), attempt+1, maxContextAttempts)
+	attemptedWindows := make(map[string]int) // track largest window requested per lab this run
+	attempt := 0
+	for attempt < maxAttempts && result.Assessment.NeedContext != nil && len(result.Assessment.NeedContext.Labs) > 0 {
+		log.Printf("AI requested additional context for %d lab(s), fetching extended data (attempt %d/%d)...", len(result.Assessment.NeedContext.Labs), attempt+1, maxAttempts)
 		attempt++
 		additionalSummaries := make([]report.Summary, 0, len(result.Assessment.NeedContext.Labs))
 		s.emit(events.KindContextRequested, func(e *events.Event) {
 			e.Message = fmt.Sprintf("%d request(s)", len(result.Assessment.NeedContext.Labs))
 		})
 		for _, req := range result.Assessment.NeedContext.Labs {
+			// Deduplicate/guard invalid context requests
+			if req.Name == "" || req.WindowHours <= 0 {
+				notes = append(notes, fmt.Sprintf("ignored_need_context_invalid lab=%s window=%d", req.Name, req.WindowHours))
+				continue
+			}
 			ch, ok := s.channelsByName[req.Name]
 			if !ok {
 				notes = append(notes, fmt.Sprintf("ignored_need_context_unknown_lab=%s", req.Name))
 				continue
 			}
-			if req.WindowHours <= 0 {
-				notes = append(notes, fmt.Sprintf("ignored_need_context_invalid_window lab=%s window=%d", req.Name, req.WindowHours))
-				continue
+			// Allow the model to escalate the window for the same lab, but avoid
+			// duplicates or smaller/equal repeated requests within the same run.
+			if prev, seen := attemptedWindows[req.Name]; seen {
+				if req.WindowHours <= prev {
+					notes = append(notes, fmt.Sprintf("ignored_need_context_nonincreasing lab=%s requested=%dh prev=%dh", req.Name, req.WindowHours, prev))
+					continue
+				}
 			}
 			window := time.Duration(req.WindowHours) * time.Hour
 			log.Printf("  Fetching %dh window for %s (reason: %s)", req.WindowHours, req.Name, req.Reason)
@@ -163,6 +187,7 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 			summary := s.aggregator.Summarize(feeds, ch.ID, ch.TemperatureField, ch.HumidityField, window, refTime, ch.Name, label)
 			additionalSummaries = append(additionalSummaries, summary)
 			escalations[ch.Name] = req.WindowHours
+			attemptedWindows[req.Name] = req.WindowHours
 			notes = append(notes, fmt.Sprintf("provided_context lab=%s window=%dh reason=%s", ch.Name, req.WindowHours, req.Reason))
 			s.emit(events.KindContextProvided, func(e *events.Event) {
 				e.LabName = ch.Name

@@ -20,6 +20,10 @@ type ChannelConfig struct {
 
 type OpenAIConfig struct {
 	Model string `yaml:"model"`
+	// MaxContextAttempts limits how many back-and-forth rounds the model can
+	// request additional historical context within a single run. If 0, a
+	// sensible default is applied by the service.
+	MaxContextAttempts int `yaml:"max_context_attempts"`
 }
 
 type EmailConfig struct {
