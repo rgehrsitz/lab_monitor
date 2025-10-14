@@ -18,7 +18,7 @@ import (
 )
 
 const baselineWindow = 24 * time.Hour
-const maxContextAttempts = 3
+const maxContextAttempts = 10
 
 type Service struct {
 	cfg            config.Config
