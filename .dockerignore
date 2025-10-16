@@ -1,0 +1,10 @@
+.git
+.gitignore
+bin
+state
+config.yaml
+config.example.yaml
+*.log
+tmp
+docs
+.DS_Store

@@ -16,6 +16,7 @@ import (
 	"labmonitor/internal/llm"
 	"labmonitor/internal/report"
 	"labmonitor/internal/state"
+	"labmonitor/internal/storage"
 	"labmonitor/internal/thingspeak"
 )
 
@@ -31,7 +32,7 @@ type Service struct {
 	promptBuilder  report.PromptBuilder
 	llmClient      *llm.Client
 	emailSender    *email.Sender
-	store          *state.Store
+	store          storage.ReportStore
 	channelsByName map[string]config.ChannelConfig
 	events         chan<- events.Event
 }
@@ -114,7 +115,7 @@ func (s *Service) computeTrendMetrics(ctx context.Context, ref time.Time) *repor
 	return &report.TrendMetrics{Labs: trendLabs}
 }
 
-func NewService(cfg config.Config, ts *thingspeak.Client, agg report.Aggregator, pb report.PromptBuilder, llmClient *llm.Client, emailSender *email.Sender, store *state.Store, events chan<- events.Event) *Service {
+func NewService(cfg config.Config, ts *thingspeak.Client, agg report.Aggregator, pb report.PromptBuilder, llmClient *llm.Client, emailSender *email.Sender, store storage.ReportStore, events chan<- events.Event) *Service {
 	channels := make(map[string]config.ChannelConfig, len(cfg.Channels))
 	for _, ch := range cfg.Channels {
 		channels[ch.Name] = ch

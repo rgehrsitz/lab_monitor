@@ -105,6 +105,11 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// Validate reuses internal validation for callers that manipulate Config directly.
+func (c Config) Validate() error {
+	return c.validate()
+}
+
 func (c Config) validate() error {
 	if len(c.Schedule.Times) == 0 {
 		return fmt.Errorf("at least one schedule time must be provided")
