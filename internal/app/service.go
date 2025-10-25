@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -19,7 +20,11 @@ import (
 	"labmonitor/internal/thingspeak"
 )
 
-const baselineWindow = 24 * time.Hour
+const (
+	baselineWindow   = 24 * time.Hour
+	comfortTempLowF  = 67.0
+	comfortTempHighF = 76.0
+)
 
 // defaultMaxContextAttempts is used when config doesn't specify a value.
 const defaultMaxContextAttempts = 3
@@ -184,6 +189,7 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		return fmt.Errorf("load last report: %w", err)
 	}
 	trends := s.computeTrendMetrics(ctx, refTime)
+	notes = append(notes, buildTrendNotes(trends, summaries)...)
 
 	log.Println("Building analysis prompt...")
 	prompt, err := s.promptBuilder.Build(summaries, lastReport, notes, trends)
@@ -243,6 +249,8 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 	}
 	// Prepare for possible context expansion loop.
 	allSummaries := append([]report.Summary(nil), summaries...)
+	applyComfortGuardrails(&result.Assessment, allSummaries)
+	s.emit(events.KindAssessmentReady, func(e *events.Event) { e.Assessment = &result.Assessment })
 	escalations := map[string]int{}
 	attempt := 0
 	prevRequestsHash := ""
@@ -326,6 +334,7 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 			break
 		}
 		log.Println("Extended analysis complete")
+		applyComfortGuardrails(&result.Assessment, allSummaries)
 		s.emit(events.KindAssessmentReady, func(e *events.Event) { e.Assessment = &result.Assessment })
 	}
 
@@ -415,6 +424,151 @@ func (s *Service) Run(ctx context.Context, now time.Time) error {
 		e.Assessment = &result.Assessment
 	})
 	return nil
+}
+
+func applyComfortGuardrails(assessment *report.Assessment, summaries []report.Summary) {
+	if assessment == nil {
+		return
+	}
+	summaryByLab := make(map[string]report.Summary, len(summaries))
+	for _, summary := range summaries {
+		if summary.LabName == "" {
+			continue
+		}
+		summaryByLab[summary.LabName] = summary
+	}
+	anyAlert := strings.EqualFold(assessment.Status, "alert")
+	for i := range assessment.Labs {
+		lab := &assessment.Labs[i]
+		summary, ok := summaryByLab[lab.Name]
+		if !ok {
+			continue
+		}
+		var reasons []string
+		if summary.LatestTemperature > 0 {
+			if summary.LatestTemperature < comfortTempLowF {
+				reasons = append(reasons, fmt.Sprintf("temperature %.1f°F below %.1f°F minimum", summary.LatestTemperature, comfortTempLowF))
+			}
+			if summary.LatestTemperature > comfortTempHighF {
+				reasons = append(reasons, fmt.Sprintf("temperature %.1f°F above %.1f°F maximum", summary.LatestTemperature, comfortTempHighF))
+			}
+		}
+		if len(reasons) == 0 {
+			continue
+		}
+		if !strings.EqualFold(lab.Status, "alert") {
+			lab.Status = "alert"
+		}
+		detail := strings.TrimSpace(lab.Details)
+		if detail != "" && !strings.HasSuffix(detail, ".") {
+			detail += "."
+		}
+		guardNote := "Comfort threshold breach: " + strings.Join(reasons, "; ")
+		if detail == "" {
+			lab.Details = guardNote
+		} else {
+			lab.Details = detail + " " + guardNote
+		}
+		anyAlert = true
+	}
+	if anyAlert && !strings.EqualFold(assessment.Status, "alert") {
+		assessment.Status = "alert"
+	}
+	if anyAlert {
+		annotated := false
+		for _, rec := range assessment.Recommendations {
+			if strings.Contains(strings.ToLower(rec), "comfort threshold") {
+				annotated = true
+				break
+			}
+		}
+		if !annotated {
+			assessment.Recommendations = append(assessment.Recommendations, "Comfort thresholds breached; investigate HVAC controls or occupancy adjustments immediately.")
+		}
+		summaryLower := strings.ToLower(strings.TrimSpace(assessment.Summary))
+		if summaryLower == "" {
+			assessment.Summary = "Comfort thresholds breached."
+		} else if !strings.Contains(summaryLower, "comfort threshold") {
+			if !strings.HasSuffix(strings.TrimSpace(assessment.Summary), ".") {
+				assessment.Summary = strings.TrimSpace(assessment.Summary) + "."
+			}
+			assessment.Summary = strings.TrimSpace(assessment.Summary + " Comfort thresholds breached.")
+		}
+	}
+}
+
+func buildTrendNotes(trends *report.TrendMetrics, summaries []report.Summary) []string {
+	if trends == nil {
+		return nil
+	}
+	summaryByLab := make(map[string]report.Summary, len(summaries))
+	for _, summary := range summaries {
+		summaryByLab[summary.LabName] = summary
+	}
+	notes := make([]string, 0, len(trends.Labs))
+	for _, lab := range trends.Labs {
+		summary, hasSummary := summaryByLab[lab.Name]
+		var pieces []string
+		if lab.Temp.Mean.H6 != nil && lab.Temp.Mean.H24 != nil {
+			delta := *lab.Temp.Mean.H6 - *lab.Temp.Mean.H24
+			if math.Abs(delta) >= 0.4 {
+				direction := "warming"
+				if delta < 0 {
+					direction = "cooling"
+				}
+				pieces = append(pieces, fmt.Sprintf("temp %s by %.1f°F (6h vs 24h mean)", direction, math.Abs(delta)))
+			}
+		}
+		if lab.Temp.Delta24 != nil && math.Abs(*lab.Temp.Delta24) >= 0.6 {
+			direction := "rose"
+			if *lab.Temp.Delta24 < 0 {
+				direction = "fell"
+			}
+			pieces = append(pieces, fmt.Sprintf("temp %s %.1f°F versus prior 24h", direction, math.Abs(*lab.Temp.Delta24)))
+		}
+		if hasSummary && math.Abs(summary.TemperatureStats.Delta) >= 0.6 {
+			hours := float64(summary.WindowHours)
+			if hours <= 0 {
+				hours = float64(baselineWindow.Hours())
+			}
+			rate := summary.TemperatureStats.Delta / hours
+			direction := "down"
+			if summary.TemperatureStats.Delta > 0 {
+				direction = "up"
+			}
+			pieces = append(pieces, fmt.Sprintf("temp moved %s %.1f°F over %s (~%.2f°F/hr)", direction, math.Abs(summary.TemperatureStats.Delta), summary.WindowLabel, math.Abs(rate)))
+		}
+		if lab.Humidity.Mean.H6 != nil && lab.Humidity.Mean.H24 != nil {
+			delta := *lab.Humidity.Mean.H6 - *lab.Humidity.Mean.H24
+			if math.Abs(delta) >= 2.0 {
+				direction := "rising"
+				if delta < 0 {
+					direction = "falling"
+				}
+				pieces = append(pieces, fmt.Sprintf("humidity %s by %.1f%% (6h vs 24h mean)", direction, math.Abs(delta)))
+			}
+		}
+		if lab.Humidity.Delta24 != nil && math.Abs(*lab.Humidity.Delta24) >= 2.5 {
+			direction := "rose"
+			if *lab.Humidity.Delta24 < 0 {
+				direction = "fell"
+			}
+			pieces = append(pieces, fmt.Sprintf("humidity %s %.1f%% versus prior 24h", direction, math.Abs(*lab.Humidity.Delta24)))
+		}
+		if hasSummary && math.Abs(summary.HumidityStats.Delta) >= 2.5 {
+			direction := "down"
+			if summary.HumidityStats.Delta > 0 {
+				direction = "up"
+			}
+			pieces = append(pieces, fmt.Sprintf("humidity shifted %s %.1f%% over %s", direction, math.Abs(summary.HumidityStats.Delta), summary.WindowLabel))
+		}
+		if len(pieces) == 0 {
+			continue
+		}
+		note := fmt.Sprintf("trend %s: %s", lab.Name, strings.Join(pieces, "; "))
+		notes = append(notes, note)
+	}
+	return notes
 }
 
 func hashString(value string) string {
